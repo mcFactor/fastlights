@@ -1,0 +1,421 @@
+/*
+ * Sing is the Processing-like framework for CloudLight procedural animation
+ * After the Processing language by Tom Igoe
+ * 
+ * For the moment, the user procedural file is simply included
+ * And everything is connected together at compile time
+ * 
+ * The user procedural file should define:
+ *
+ * void setup(void*)
+ * void loop(void*)
+ *
+ * And leave everything else to this framework. Hopefully.
+ * 
+ * This program is free software; you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation; either version 2 of the License.
+ *
+ * Cross-compile with cross-gcc -I/path/to/cross-kernel/include
+ */
+
+#include <stdint.h>
+#include <unistd.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <getopt.h>
+#include <fcntl.h>
+#include <sys/ioctl.h>
+#include <sys/types.h>
+#include <linux/types.h>
+#ifndef OLIMEX
+#include <linux/spi/spidev.h>
+#endif
+#ifdef OLIMEX
+#include "gpio-mmap.h"
+#endif
+#include <time.h>
+#include <string.h>
+
+#define ARRAY_SIZE(a) (sizeof(a) / sizeof((a)[0]))
+#define ROWS_PER_FACE 3
+#define COLS_PER_FACE 3
+#define BULBS_INSIDE 4
+#define NUM_BULBS 52
+
+static void pabort(const char *s)
+{
+	perror(s);
+	abort();
+}
+
+#ifndef OLIMEX
+static const char *device = "/dev/spidev0.0";
+static uint32_t speed = 500000;
+static uint8_t mode;
+static uint16_t delay;
+#endif
+
+static uint8_t bits = 8;
+uint8_t* txbuf;			// Global frame buffer
+int string_size = 0;
+
+
+#ifndef OLDPROTO
+// Each face array starts at the upper left corner, 
+// And completes at the lower right corner.  Hopefully.
+// static uint8_t top_face[ROWS_PER_FACE][COLS_PER_FACE] = {
+
+// 1 lights 9
+// 2 lights 6
+// 3 lights 3
+// 4 lights 8
+// 5 lights 5
+// 6 lights 2
+// 7 lights 7
+// 8 lights 4
+// 9 lights 1
+
+static uint8_t top_face[ROWS_PER_FACE][COLS_PER_FACE] = {
+//	29, 28, 27,
+//	17, 16, 15,
+//	5, 4, 3
+
+	3, 15, 27,
+	4, 16, 28,
+	5, 17, 29
+
+};
+
+static uint8_t right_face[ROWS_PER_FACE][COLS_PER_FACE] = {
+//	32, 31, 30,
+//	20, 19, 18,
+//	8, 7, 6
+
+	6, 18, 30,
+	7, 19, 31,
+	8, 20, 32
+
+};
+
+static uint8_t  bottom_face[ROWS_PER_FACE][COLS_PER_FACE] = {
+//	35, 34, 33,
+//	23, 22, 21,
+//	11, 10, 9
+
+	9, 21, 33,
+	10, 22, 34,
+	11, 23, 35
+
+
+};
+
+static uint8_t left_face[ROWS_PER_FACE][COLS_PER_FACE] = {
+//	26, 25, 24,
+//	14, 13, 12,
+//	2, 1, 0
+
+	0, 12, 24,
+	1, 13, 25,
+	2, 14, 26
+
+};
+
+#else
+
+// Each face array starts at the upper left corner, 
+// And completes at the lower right corner.  Hopefully.
+static uint8_t top_face[ROWS_PER_FACE][COLS_PER_FACE] = {
+	31, 30, 29,
+	19, 18, 17,
+	7, 6, 5
+};
+
+static uint8_t right_face[ROWS_PER_FACE][COLS_PER_FACE] = {
+	34, 33, 32,
+	22, 21, 20,
+	10, 9, 8
+};
+
+static uint8_t  bottom_face[ROWS_PER_FACE][COLS_PER_FACE] = {
+	25, 24, 35,
+	13, 12, 23,
+	1, 0, 11
+};
+
+static uint8_t left_face[ROWS_PER_FACE][COLS_PER_FACE] = {
+	28, 27, 26,
+	16, 15, 14,
+	4, 3, 2
+};
+#endif
+
+static uint8_t *faces[4] = {
+	(uint8_t*) &right_face,
+	(uint8_t*) &bottom_face,
+	(uint8_t*) &left_face,
+	(uint8_t*) &top_face
+
+};
+
+inline uint8_t get_bulb_number(int face, int row, int col) {
+register uint8_t *thingy;
+	// Maps a face, row and column to a bulb number, quickly.
+	thingy = faces[face];
+	return thingy[row*ROWS_PER_FACE + col];
+}
+
+#ifndef OLDPROTO
+
+static uint8_t left_inside[BULBS_INSIDE] = {
+	38, 46, 39, 47 
+};
+
+static uint8_t top_inside[BULBS_INSIDE] = {
+	40, 48, 41, 49  
+};
+
+static uint8_t right_inside[BULBS_INSIDE] = {
+	42, 50, 43, 51 
+};
+
+static uint8_t bottom_inside[BULBS_INSIDE] = {
+	36, 44, 37, 45 
+};
+
+#else 
+
+static uint8_t left_inside[BULBS_INSIDE] = {
+	36, 37, 44, 45 
+};
+
+static uint8_t top_inside[BULBS_INSIDE] = {
+	38, 39, 46, 47 
+};
+
+static uint8_t right_inside[BULBS_INSIDE] = {
+	40, 41, 48, 49 
+};
+
+static uint8_t bottom_inside[BULBS_INSIDE] = {
+	42, 43, 50, 51 
+};
+
+#endif
+
+static uint8_t *insides[4] = {
+	(uint8_t*) &right_inside,
+	(uint8_t*) &bottom_inside,
+	(uint8_t*) &left_inside,
+	(uint8_t*) &top_inside
+
+};
+
+inline uint8_t get_inside_bulb_number(int face, int bulb) {
+  register uint8_t *thingy;
+	// Maps a face, and a bulb to a bulb number, quickly.
+	thingy = insides[face];
+	return thingy[bulb];
+}
+
+static void send_frame(int fd, uint8_t txbuf[], int buffsize)
+{
+#ifdef OLIMEX
+  // GPIO 65 = LED
+  // GPIO 20 = SSP2_MOSI = LED DATA = OL Micro CON2 pin 10 = OL Maxi UEXT pin 8
+  // GPIO 24 = SSP2_SCK = LED CLOCK = OL Micro CON2 pin 11 = OL Maxi UEXT pin 9
+  GPIO_WRITE_PIN(65,1);
+  uint8_t i, j, v, b;
+  for (i=0; i<buffsize; i++) {
+    v = txbuf[i];
+    b = 0x80;
+    for (j=0; j<bits; j++) {
+      GPIO_WRITE_PIN(20,v&b);
+      b >>= 1;
+      GPIO_WRITE_PIN(24,1);
+      GPIO_WRITE_PIN(24,0);
+    }
+  }
+  GPIO_WRITE_PIN(65,0);
+#else
+	int ret;
+	int j  = 0;
+	int offset;
+	uint8_t rx[385] = { 0, };
+	struct spi_ioc_transfer tr = {
+		.tx_buf = (unsigned long)txbuf,
+		.rx_buf = (unsigned long)rx,
+		.len = buffsize,
+		.delay_usecs = delay,
+		.speed_hz = speed,
+		.bits_per_word = bits,
+	};
+	
+	//printf("buffsize %d\n", buffsize);
+	ret = ioctl(fd, SPI_IOC_MESSAGE(1), &tr);
+	if (ret < 1)
+		pabort("can't send spi message");
+#endif
+}
+
+void set_pixel(int face, int row, int col, uint8_t r, uint8_t g, uint8_t b) {
+	int offset;
+	
+	// Need to check for out-of-bounds here, but meh.
+	//printf("col %d row %d offset %d\n", col, row, (*climap + col)[row]);
+	// Calculate the offset into the buffer
+	offset = get_bulb_number(face, row, col) * 3;		// Get the correct offset from the map
+	txbuf[offset] = g | 0x80;
+	txbuf[offset+1] = r | 0x80;
+	txbuf[offset+2] = b | 0x80;
+	//printf("%d %d %x %x %x\n", row, col, r, g, b);
+
+}
+
+void set_inner_pixel(int face, int bulb, uint8_t r, uint8_t g, uint8_t b) {
+	int offset;
+	
+	// Need to check for out-of-bounds here, but meh.
+	// Calculate the offset into the buffer
+	offset = get_inside_bulb_number(face, bulb) * 3;		// Get the correct offset from the map
+	txbuf[offset] = g | 0x80;
+	txbuf[offset+1] = r | 0x80;
+	txbuf[offset+2] = b | 0x80;
+
+}
+
+int main(int argc, char *argv[])
+{
+	int ret = 0;
+	int fd, ss, sp, j;
+	int retuid;
+	int batnum = -1;
+	int face, row, col;
+	uint8_t r, g, b;
+	uint8_t* thingy;
+	uint8_t* thingo[3];
+	int bytes_read;
+	int nbytes = 100;
+	char *my_string;
+	long rawcolor;
+	
+#ifdef OLIMEX
+	retuid = setuid(0);		// root me!
+	if (retuid == -1) {
+		exit(-10);
+	}
+#endif
+
+
+
+	// Read the size of our LED string
+	// Use the correct map for the string size
+	string_size = ss = NUM_BULBS;
+	//lamp_cols = (uint8_t) (string_size / lamp_rows);	// Set lamp columns
+	sp = ss * 3;			// Number of color units in string
+
+	// Allocate space for the frame transmit buffer
+	txbuf = malloc(sp + 3);
+	txbuf[sp] = txbuf[sp+1] = txbuf[sp+2] = 0x00;		// Last byte always null for end of sequence signalling
+
+#ifdef OLIMEX
+  gpio_map();
+  gpio_output(2,1); //bank 2 bit 1 = GPIO65 the LED on board
+  gpio_output(0,20); //bank 0 bit 20 = GPIO20 = SSP2_MOSI
+  gpio_output(0,24); //bank 0 bit 24 = GPIO24 = SSP2_SCLK
+#else
+	fd = open(device, O_RDWR);
+	if (fd < 0)
+		pabort("can't open device");
+
+	/*
+	 * spi mode
+	 */
+	ret = ioctl(fd, SPI_IOC_WR_MODE, &mode);
+	if (ret == -1)
+		pabort("can't set spi mode");
+
+	ret = ioctl(fd, SPI_IOC_RD_MODE, &mode);
+	if (ret == -1)
+		pabort("can't get spi mode");
+
+	/*
+	 * bits per word
+	 */
+	ret = ioctl(fd, SPI_IOC_WR_BITS_PER_WORD, &bits);
+	if (ret == -1)
+		pabort("can't set bits per word");
+
+	ret = ioctl(fd, SPI_IOC_RD_BITS_PER_WORD, &bits);
+	if (ret == -1)
+		pabort("can't get bits per word");
+
+	/*
+	 * max speed hz
+	 */
+	ret = ioctl(fd, SPI_IOC_WR_MAX_SPEED_HZ, &speed);
+	if (ret == -1)
+		pabort("can't set max speed hz");
+
+	ret = ioctl(fd, SPI_IOC_RD_MAX_SPEED_HZ, &speed);
+	if (ret == -1)
+		pabort("can't get max speed hz");
+
+	printf("spi mode: %d\n", mode);
+	printf("bits per word: %d\n", bits);
+	printf("max speed: %d Hz (%d KHz)\n", speed, speed/1000);
+#endif
+
+	// So here's the interesting bit.  We expect to get passed stuff on stdin.
+	// Every line should be a value, there should be 52 lines for 52 bulbs
+	// Then we will display the lot.
+	// We block while we're waiting for values.  As you do.
+	memset((void*) txbuf, (int) 0x80, (size_t) sp);  // Clear the string quickly
+
+	// Read a line
+	// Set a bulb
+	// And move on
+	my_string = (char*) malloc(nbytes+1);
+	for (face = 0; face < 4; face++) {
+		for (row = 0; row < ROWS_PER_FACE; row++) {
+			for (col = 0; col < COLS_PER_FACE; col++) {
+				bytes_read = getline(&my_string, &nbytes, stdin);
+				//printf("Read %s from stdin\n", my_string);
+				//my_string[8] = 0;
+				rawcolor = strtol(my_string, NULL, 10);
+				//printf("Rawcolor %x from stdin\n", rawcolor);
+				r = (rawcolor >> 16) & 0xFF;
+				g = (rawcolor >> 8) & 0xFF;
+				b = rawcolor & 0xFF;
+				//printf("Color %x %x %x\n", r, g, b);
+				set_pixel(face, row, col, r, g, b);
+			}
+		}
+
+	}
+
+	// Chase the inner LEDs
+	for (face = 0; face < 4; face++) {
+		for (row = 0; row < BULBS_INSIDE; row++) {
+			bytes_read = getline(&my_string, &nbytes, stdin);
+			//printf("Read %s from stdin\n", my_string);
+			rawcolor = strtol(my_string, NULL, 10);
+			r = (rawcolor >> 16) & 0xFF;
+			g = (rawcolor >> 8) & 0xFF;
+			b = rawcolor & 0xFF;
+
+			set_inner_pixel(face, row, r, g, b);
+		}
+	}
+	send_frame(fd, txbuf, (sp + 3));		// Try to transmit the frame
+
+
+	free(txbuf);		// Always clean up after yourself!
+	free(my_string);
+
+#ifndef OLIMEX	
+	close(fd);
+#endif
+
+	return 0;
+}

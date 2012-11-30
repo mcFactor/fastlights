@@ -388,7 +388,7 @@ int main(int argc, char *argv[])
 	long rawcolor;
 	uint8_t r, g, b;
 
-    layoutloader("layout.conf.json");
+    layoutloader("/etc/moorescloud.light.layout.conf.json");
 
     retuid = setuid(0);     // root me!
     if (retuid == -1) {
